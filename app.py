@@ -8,6 +8,8 @@ import os
 import io
 import json
 import hmac
+import hashlib
+import secrets
 import calendar
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -55,7 +57,7 @@ def eligible(child, month, half, today):
     return today>=end and streak_ok(child, first, end)
 
 st.markdown('''<style>
-.block-container{max-width:780px;padding-top:1rem;padding-bottom:1rem}
+.block-container{max-width:780px;padding-top:2.5rem;padding-bottom:1rem}
 header[data-testid="stHeader"]{height:0.6rem}
 .stApp{background:linear-gradient(135deg,#fffaf6,#fff0f4)}
 h1{font-size:1.65rem!important;color:#824858}
@@ -64,20 +66,51 @@ h1{font-size:1.65rem!important;color:#824858}
 </style>''',unsafe_allow_html=True)
 st.title('🌷 엄마도 사람이야!')
 st.caption('엄마의 쉬는 시간은 늘리고, 우리 가족의 추억은 더하고')
-family_pin=config('FAMILY_PIN'); mom_pin=config('MOM_PIN')
-if not family_pin or not mom_pin or family_pin==mom_pin:
-    st.info('첫 설정: 공유 전 앱 관리 화면의 Secrets에 서로 다른 FAMILY_PIN(가족 접속 코드), MOM_PIN(엄마 승인 코드)을 등록하세요. 아래 안내에서 설정 예시를 확인하세요.')
-    with st.expander('설정·운영 안내', expanded=True):
-        st.code('FAMILY_PIN = "가족만아는긴코드"\nMOM_PIN = "엄마만아는다른긴코드"\n# PUBLIC_APP_URL = "https://실제앱주소.streamlit.app"',language='toml')
-        st.write('GitHub에 app.py와 requirements.txt 업로드 → Streamlit Community Cloud에서 app.py 선택 → Secrets 설정 → 배포. PIN을 소스 코드나 GitHub에 올리지 마세요.')
-        st.warning('현재 버전은 SQLite 체험용 저장입니다. 클라우드 재시작·재배포·휴면 복구 시 데이터가 없어질 수 있습니다. 장기 운영은 외부 데이터베이스로 바꿔야 합니다. 앱 안에서 백업을 내려받을 수 있습니다.')
+def pin_digest(pin, salt):
+    return hashlib.pbkdf2_hmac('sha256', pin.encode('utf-8'), bytes.fromhex(salt), 200000).hex()
+
+def verify_pin(pin, role):
+    configured=config('FAMILY_PIN' if role=='family' else 'MOM_PIN')
+    if configured:
+        return hmac.compare_digest(pin.encode('utf-8'), configured.encode('utf-8'))
+    record=setting('access_'+role, None)
+    return bool(record and hmac.compare_digest(pin_digest(pin,record['salt']),record['digest']))
+
+missing=[role for role,key in [('family','FAMILY_PIN'),('mom','MOM_PIN')]
+         if not config(key) and not setting('access_'+role,None)]
+if missing:
+    st.subheader('🏡 우리 가족 첫 설정')
+    st.caption('앱을 처음 연 가족이 접속 코드를 등록해 주세요. 외부에 주소를 공유하기 전에 설정하세요.')
+    with st.form('initial_setup'):
+        new_family=st.text_input('가족 접속 코드 · 6자 이상',type='password')
+        new_mom=st.text_input('엄마 승인 코드 · 가족 코드와 다르게',type='password')
+        confirm=st.text_input('엄마 승인 코드 다시 입력',type='password')
+        submitted=st.form_submit_button('등록하고 시작하기',use_container_width=True)
+    if submitted:
+        if len(new_family)<6 or len(new_mom)<6:
+            st.error('두 코드 모두 6자 이상으로 입력해 주세요.')
+        elif new_family==new_mom:
+            st.error('가족 코드와 엄마 코드는 다르게 정해 주세요.')
+        elif new_mom!=confirm:
+            st.error('엄마 승인 코드가 서로 다릅니다.')
+        elif ('family' not in missing and not verify_pin(new_family,'family')) or ('mom' not in missing and not verify_pin(new_mom,'mom')):
+            st.error('이미 설정된 코드는 기존 코드와 동일하게 입력해 주세요.')
+        else:
+            with connect() as c:
+                for role,pin in [('family',new_family),('mom',new_mom)]:
+                    if role in missing:
+                        salt=secrets.token_hex(16)
+                        value=json.dumps({'salt':salt,'digest':pin_digest(pin,salt)})
+                        c.execute('INSERT OR IGNORE INTO settings VALUES (?,?)',('access_'+role,value))
+            st.rerun()
+    st.caption('코드는 해시 형태로 저장합니다. 클라우드의 내부 저장소가 초기화되면 기록과 접속 코드도 초기화될 수 있습니다.')
     st.stop()
 if not st.session_state.get('family_login'):
     with st.form('login'):
         pin=st.text_input('가족 접속 코드',type='password')
         submit=st.form_submit_button('우리 집 들어가기',use_container_width=True)
     if submit:
-        if hmac.compare_digest(pin,family_pin):
+        if verify_pin(pin,'family'):
             st.session_state.family_login=True; st.rerun()
         else: st.error('접속 코드를 확인해 주세요.')
     st.stop()
@@ -96,7 +129,7 @@ if is_mom and not st.session_state.get('mom_login'):
         pin=st.text_input('엄마 승인 코드',type='password')
         login=st.form_submit_button('엄마 모드 열기')
     if login:
-        if hmac.compare_digest(pin,mom_pin):st.session_state.mom_login=True;st.rerun()
+        if verify_pin(pin,'mom'):st.session_state.mom_login=True;st.rerun()
         else:st.error('엄마 승인 코드가 맞지 않습니다.')
     st.stop()
 if is_mom:
@@ -217,7 +250,7 @@ elif section=='설정':
                     st.rerun()
             st.caption('자녀 순서가 기록의 기준입니다. 기존 자녀를 바꾸면 기록도 이어집니다. 용돈 수정은 미지급 금액에 즉시 반영되고, 제출한 퀘스트 내용은 그대로 남습니다.')
         with st.expander('데이터 백업'):
-            backup={t:[dict(r) for r in rows('SELECT * FROM '+t)] for t in ['settings','checks','plans','payments']}
+            backup={t:[dict(r) for r in rows('SELECT * FROM '+t) if t!='settings' or not r['k'].startswith('access_')] for t in ['settings','checks','plans','payments']}
             st.download_button('JSON 백업 다운로드',json.dumps(backup,ensure_ascii=False,indent=2),file_name=f'family_backup_{today}.json',mime='application/json')
             st.caption('보관용 백업이며 이 버전에는 자동 복원 기능이 없습니다. 개인정보가 포함되므로 안전하게 보관하세요.')
     with st.expander('QR로 가족 초대'):
