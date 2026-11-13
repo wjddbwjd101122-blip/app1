@@ -117,7 +117,12 @@ if not st.session_state.get('family_login'):
 
 names=setting('names',['첫째','둘째','셋째'])
 quests=setting('quests',['내 자리 정리하기','내 자리 정리하기','내 자리 정리하기'])
-allowance=setting('allowance',[30000,30000,30000])
+# Apply the requested allowance change once, including existing installations.
+if not setting('allowance_200000_v1', False):
+    with connect() as c:
+        c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('allowance', json.dumps([200000,200000,200000])))
+        c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('allowance_200000_v1', 'true'))
+allowance=setting('allowance',[200000,200000,200000])
 chores=setting('chores',['설거지 돕기','빨래 정리','분리수거'])
 anchor=date.fromisoformat(setting('anchor','2026-01-01'))
 today=date.today(); month=today.strftime('%Y-%m'); first=today.replace(day=1)
