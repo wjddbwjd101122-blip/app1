@@ -56,63 +56,84 @@ def eligible(child, month, half, today):
     end=first.replace(day=15) if half==1 else last
     return today>=end and streak_ok(child, first, end)
 
-st.markdown('''<style>
-.block-container{max-width:780px;padding-top:2.5rem;padding-bottom:1rem}
-header[data-testid="stHeader"]{height:0.6rem}
-.stApp{background:linear-gradient(135deg,#fffaf6,#fff0f4)}
-h1{font-size:1.65rem!important;color:#824858}
-.stButton>button{border-radius:14px}
+st.markdown("""<style>
+.block-container{max-width:620px;padding-top:1.8rem;padding-bottom:1.3rem}
+header[data-testid="stHeader"]{height:.5rem}
+.stApp{background:#fafafa;color:#262626}
+h1{font-family:sans-serif;font-size:1.65rem!important;font-weight:800!important;letter-spacing:-1px;color:#262626}
+h2,h3{font-size:1.12rem!important;letter-spacing:-.4px}
+[data-testid="stForm"], [data-testid="stExpander"]{background:#fff;border:1px solid #dbdbdb;border-radius:12px}
+.stButton>button,.stFormSubmitButton>button{border:1px solid #dbdbdb;border-radius:9px;font-weight:600;background:#fff;color:#262626}
+.stFormSubmitButton>button{background:#e1306c;color:white;border:0}
 [data-testid="stMetricValue"]{font-size:1.3rem}
-</style>''',unsafe_allow_html=True)
-st.title('🌷 엄마도 사람이야!')
-st.caption('엄마의 쉬는 시간은 늘리고, 우리 가족의 추억은 더하고')
+[data-testid="stSegmentedControl"]{padding:8px 0;border-top:1px solid #dbdbdb;border-bottom:1px solid #dbdbdb}
+[data-testid="stProgressBar"]>div>div{background:#e1306c}
+@media(max-width:480px){.block-container{padding-left:1rem;padding-right:1rem}h1{font-size:1.4rem!important}}
+</style>""",unsafe_allow_html=True)
+st.title('moments · 엄마도 사람이야!')
+st.caption('♡  우리 가족의 작은 실천, 함께 쌓는 추억')
 def pin_digest(pin, salt):
     return hashlib.pbkdf2_hmac('sha256', pin.encode('utf-8'), bytes.fromhex(salt), 200000).hex()
 
 def verify_pin(pin, role):
-    configured=config('FAMILY_PIN' if role=='family' else 'MOM_PIN')
+    configured=config('MOM_PIN') if role=='mom' else ''
     if configured:
         return hmac.compare_digest(pin.encode('utf-8'), configured.encode('utf-8'))
     record=setting('access_'+role, None)
-    return bool(record and hmac.compare_digest(pin_digest(pin,record['salt']),record['digest']))
+    try:
+        return bool(isinstance(record,dict) and hmac.compare_digest(pin_digest(pin,record['salt']),record['digest']))
+    except (ValueError,TypeError,KeyError):
+        return False
 
-missing=[role for role,key in [('family','FAMILY_PIN'),('mom','MOM_PIN')]
-         if not config(key) and not setting('access_'+role,None)]
-if missing:
-    st.subheader('🏡 우리 가족 첫 설정')
-    st.caption('앱을 처음 연 가족이 접속 코드를 등록해 주세요. 외부에 주소를 공유하기 전에 설정하세요.')
-    with st.form('initial_setup'):
-        new_family=st.text_input('가족 접속 코드 · 6자 이상',type='password')
-        new_mom=st.text_input('엄마 승인 코드 · 가족 코드와 다르게',type='password')
-        confirm=st.text_input('엄마 승인 코드 다시 입력',type='password')
-        submitted=st.form_submit_button('등록하고 시작하기',use_container_width=True)
+# Separate fixed account IDs: display-name edits never transfer ownership.
+roles=['mom','child0','child1','child2']
+if any(not setting('access_'+r,None) for r in roles):
+    st.subheader('가족 계정 설정')
+    st.caption('엄마와 자녀 3명의 코드를 각각 등록합니다. 공통 가족 코드는 더 이상 사용하지 않습니다.')
+    mom_exists=bool(config('MOM_PIN') or setting('access_mom',None))
+    if mom_exists and not st.session_state.get('setup_authorized_v4'):
+        with st.form('authorize_setup'):
+            old=st.text_input('기존 엄마 코드',type='password')
+            unlock=st.form_submit_button('엄마 확인 후 계정 설정')
+        if unlock:
+            if verify_pin(old,'mom'):
+                st.session_state.setup_authorized_v4=True;st.rerun()
+            else:st.error('기존 엄마 코드가 맞지 않습니다. Secrets에 MOM_PIN이 있으면 그 값을 사용하세요.')
+        st.stop()
+    with st.form('four_accounts'):
+        labels=['엄마','첫째','둘째','셋째']
+        pins=[st.text_input(label+'의 새 코드 · 6자 이상',type='password',key='setup_'+r) for label,r in zip(labels,roles)]
+        submitted=st.form_submit_button('4명 계정 저장',use_container_width=True)
     if submitted:
-        if len(new_family)<6 or len(new_mom)<6:
-            st.error('두 코드 모두 6자 이상으로 입력해 주세요.')
-        elif new_family==new_mom:
-            st.error('가족 코드와 엄마 코드는 다르게 정해 주세요.')
-        elif new_mom!=confirm:
-            st.error('엄마 승인 코드가 서로 다릅니다.')
-        elif ('family' not in missing and not verify_pin(new_family,'family')) or ('mom' not in missing and not verify_pin(new_mom,'mom')):
-            st.error('이미 설정된 코드는 기존 코드와 동일하게 입력해 주세요.')
+        if any(len(x)<6 for x in pins):st.error('모든 코드를 6자 이상 입력하세요.')
+        elif len(set(pins))!=4:st.error('네 코드를 모두 다르게 정해 주세요.')
+        elif config('MOM_PIN') and pins[0]!=config('MOM_PIN'):
+            st.error('Secrets에 MOM_PIN이 있습니다. 엄마 코드는 그 값과 같게 입력하거나, Secrets의 MOM_PIN을 먼저 삭제해 주세요.')
         else:
             with connect() as c:
-                for role,pin in [('family',new_family),('mom',new_mom)]:
-                    if role in missing:
-                        salt=secrets.token_hex(16)
-                        value=json.dumps({'salt':salt,'digest':pin_digest(pin,salt)})
-                        c.execute('INSERT OR IGNORE INTO settings VALUES (?,?)',('access_'+role,value))
-            st.rerun()
-    st.caption('코드는 해시 형태로 저장합니다. 클라우드의 내부 저장소가 초기화되면 기록과 접속 코드도 초기화될 수 있습니다.')
+                for r,pin in zip(roles,pins):
+                    salt=secrets.token_hex(16)
+                    record={'salt':salt,'digest':pin_digest(pin,salt)}
+                    c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',('access_'+r,json.dumps(record)))
+            st.session_state.clear();st.rerun()
+    st.caption('엄마가 최초 설정한 뒤 각 자녀에게 본인의 코드만 알려 주세요. 이 페이지는 계정 설정이 완료되면 사라집니다.')
     st.stop()
-if not st.session_state.get('family_login'):
-    with st.form('login'):
-        pin=st.text_input('가족 접속 코드',type='password')
-        submit=st.form_submit_button('우리 집 들어가기',use_container_width=True)
-    if submit:
-        if verify_pin(pin,'family'):
-            st.session_state.family_login=True; st.rerun()
-        else: st.error('접속 코드를 확인해 주세요.')
+
+names=setting('names',['첫째','둘째','셋째'])
+if not st.session_state.get('login_v4'):
+    st.subheader('우리 가족 로그인')
+    st.caption('내 계정을 선택하고 내 코드 하나만 입력하세요.')
+    with st.form('account_login'):
+        account=st.selectbox('내 계정',roles,format_func=lambda r:'엄마' if r=='mom' else names[int(r[-1])])
+        pin=st.text_input('내 접속 코드',type='password')
+        submitted=st.form_submit_button('로그인',use_container_width=True)
+    if submitted:
+        if verify_pin(pin,account):
+            st.session_state.login_v4=True
+            st.session_state.account_id=account
+            st.session_state.mom_login=(account=='mom')
+            st.rerun()
+        else:st.error('선택한 계정의 코드가 맞지 않습니다.')
     st.stop()
 
 names=setting('names',['첫째','둘째','셋째'])
@@ -127,19 +148,17 @@ chores=setting('chores',['설거지 돕기','빨래 정리','분리수거'])
 anchor=date.fromisoformat(setting('anchor','2026-01-01'))
 today=date.today(); month=today.strftime('%Y-%m'); first=today.replace(day=1)
 last=today.replace(day=calendar.monthrange(today.year,today.month)[1])
-who=st.selectbox('누가 들어왔나요?',['엄마']+names,label_visibility='collapsed')
-is_mom=who=='엄마'
-if is_mom and not st.session_state.get('mom_login'):
-    with st.form('mom_login'):
-        pin=st.text_input('엄마 승인 코드',type='password')
-        login=st.form_submit_button('엄마 모드 열기')
-    if login:
-        if verify_pin(pin,'mom'):st.session_state.mom_login=True;st.rerun()
-        else:st.error('엄마 승인 코드가 맞지 않습니다.')
-    st.stop()
+account_id=st.session_state.account_id
+is_mom=account_id=='mom'
 if is_mom:
-    if st.button('엄마 모드 잠그기'):st.session_state.pop('mom_login',None);st.rerun()
-section=st.segmented_control('메뉴',['오늘','추억 계획','용돈','설정'],default='오늘',label_visibility='collapsed')
+    who='엄마'
+    st.caption('엄마로 로그인했어요 · 추가 코드 입력 없이 사용할 수 있습니다.')
+else:
+    who=names[int(account_id[-1])]
+    st.caption(f'● {who} · 나의 퀘스트와 용돈')
+if st.button('로그아웃 / 사용자 변경',key='top_logout'):
+    st.session_state.clear();st.rerun()
+section=st.segmented_control('메뉴',['오늘','추억 계획','용돈','설정'],default='오늘',key='main_section',label_visibility='collapsed')
 # Same page, content swaps to keep the initial mobile view compact. No content is clipped.
 if section=='오늘':
     st.subheader(f'☀️ {today:%m월 %d일} · 오늘의 팀워크')
@@ -200,7 +219,7 @@ elif section=='추억 계획':
         for r in plans:
             st.write(f'{"✅" if r["done"] else "📌"} {r["day"]} · {r["title"]} · {r["budget"]:,}원')
             st.caption(r['memo'])
-            if is_mom and not r['done'] and st.button('다녀왔어요',key=f'done{r["id"]}'):
+            if is_mom and is_mom and not r['done'] and st.button('다녀왔어요',key=f'done{r["id"]}'):
                 execute('UPDATE plans SET done=1 WHERE id=?',(r['id'],));st.rerun()
 elif section=='용돈':
     st.subheader('🪙 개근으로 완성하는 용돈')
@@ -235,7 +254,7 @@ elif section=='용돈':
             st.dataframe(df.rename(columns={'day':'날짜','child':'자녀','quest':'퀘스트','approved':'상태'}),hide_index=True,use_container_width=True)
         else:st.caption('아직 기록이 없습니다.')
 elif section=='설정':
-    st.subheader('⚙️ 우리 집 약속')
+    st.subheader('⚙️ 가족 설정')
     if is_mom:
         with st.expander('자녀 · 퀘스트 · 용돈 · 집안일 설정'):
             with st.form('settings'):
@@ -258,7 +277,8 @@ elif section=='설정':
             backup={t:[dict(r) for r in rows('SELECT * FROM '+t) if t!='settings' or not r['k'].startswith('access_')] for t in ['settings','checks','plans','payments']}
             st.download_button('JSON 백업 다운로드',json.dumps(backup,ensure_ascii=False,indent=2),file_name=f'family_backup_{today}.json',mime='application/json')
             st.caption('보관용 백업이며 이 버전에는 자동 복원 기능이 없습니다. 개인정보가 포함되므로 안전하게 보관하세요.')
-    with st.expander('QR로 가족 초대'):
+    with st.expander('가족에게 앱 공유하기 · QR'):
+        st.caption('① 브라우저 주소창에서 이 앱의 https://…streamlit.app 주소 복사 → ② 아래 칸에 붙여넣고 Enter → ③ QR 이미지 받기. 이미 접속했다면 QR은 필요 없어요. 앱 주소를 카카오톡으로 보내도 됩니다.')
         url=st.text_input('배포한 앱의 HTTPS 주소',value=config('PUBLIC_APP_URL'),placeholder='https://your-app.streamlit.app')
         if url:
             if not url.startswith('https://'):st.error('실제 배포한 HTTPS 주소를 입력해 주세요.')
@@ -266,8 +286,8 @@ elif section=='설정':
                 image=qrcode.make(url);buf=io.BytesIO();image.save(buf,format='PNG')
                 st.image(buf.getvalue(),width=170)
                 st.download_button('QR 이미지 받기',buf.getvalue(),'family_qr.png','image/png')
-                st.caption('QR은 접속 링크입니다. 접속 코드는 QR에 넣지 말고 가족에게 따로 전달하세요.')
-    st.warning('체험용 로컬 저장: Streamlit Cloud에서는 재시작·재배포 등으로 데이터가 사라질 수 있습니다. PIN 방식은 간단한 가족용 접근 제한이며, 자녀별 본인 인증은 하지 않습니다. 같은 가족 코드를 아는 사람은 다른 자녀를 선택할 수 있습니다.')
+                st.caption('QR은 접속 링크입니다. QR에는 앱 주소만 들어갑니다. 각자 본인 계정과 코드로 로그인하세요.')
+    st.warning('체험용 로컬 저장: Streamlit Cloud에서는 재시작·재배포 등으로 데이터가 사라질 수 있습니다. PIN 방식은 간단한 가족용 접근 제한이며, 정식 인증 서비스나 비밀번호 복구 기능은 제공하지 않습니다. 계정별 코드를 사용하며 로그인한 자녀의 기록만 표시됩니다. 코드를 서로 공유하지 마세요.')
     st.caption('스마트폰 세로 화면에 맞춘 짧은 기본 화면입니다. 작은 화면·큰 글꼴·키보드·펼친 설정에서는 스크롤이 필요합니다. 다른 기기의 변경 사항은 새로고침 후 표시됩니다. 날짜는 실행 서버 기준입니다.')
     if st.button('가족 로그아웃'):
         st.session_state.clear();st.rerun()
